@@ -206,25 +206,44 @@ Demandez votre devis → lien en bio
 # ─── UPLOAD IMAGE BUFFER ──────────────────────────────────────────────────────
 
 def upload_image_url_to_buffer(image_url: str) -> str | None:
-    """Upload depuis une URL publique (images hébergées sur GitHub ou autre)."""
-    mutation = """mutation CreateMedia($input: CreateMediaInput!) {
-      createMedia(input: $input) { id url }
+    """Upload depuis une URL publique via mutation Buffer correcte."""
+    mutation = """mutation UploadMedia($input: UploadMediaInput!) {
+      uploadMedia(input: $input) { id url }
     }"""
     try:
+        # Télécharger l'image depuis GitHub
+        img_response = requests.get(image_url, timeout=30)
+        if img_response.status_code != 200:
+            print(f"⚠️  Image non trouvée : {image_url}")
+            return None
+
+        ext = image_url.split(".")[-1].lower()
+        mime_map = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+                    "webp": "image/webp", "heic": "image/heic"}
+        mime_type = mime_map.get(ext, "image/jpeg")
+        filename = image_url.split("/")[-1]
+
+        files = {
+            "operations": (None, json.dumps({
+                "query": mutation,
+                "variables": {"input": {"organizationId": BUFFER_ORG_ID, "file": None}}
+            })),
+            "map": (None, json.dumps({"0": ["variables.input.file"]})),
+            "0": (filename, img_response.content, mime_type)
+        }
         response = requests.post(
             "https://api.buffer.com/graphql",
-            headers={"Authorization": f"Bearer {BUFFER_TOKEN}", "Content-Type": "application/json"},
-            json={"query": mutation, "variables": {"input": {
-                "organizationId": BUFFER_ORG_ID,
-                "url": image_url
-            }}},
-            timeout=30
+            headers={"Authorization": f"Bearer {BUFFER_TOKEN}"},
+            files=files,
+            timeout=60
         )
         data = response.json()
         if "errors" in data:
             print(f"⚠️  Upload image échoué : {data['errors']}")
             return None
-        return data["data"]["createMedia"]["id"]
+        media_id = data["data"]["uploadMedia"]["id"]
+        print(f"✅ Image uploadée (ID: {media_id})")
+        return media_id
     except Exception as e:
         print(f"⚠️  Erreur upload : {e}")
         return None
@@ -233,7 +252,14 @@ def upload_image_url_to_buffer(image_url: str) -> str | None:
 
 def schedule_buffer_post(channel_id: str, text: str, media_id: str = None) -> bool:
     mutation = """mutation CreatePost($input: CreatePostInput!) {
-      createPost(input: $input) { post { id status } }
+      createPost(input: $input) {
+        ... on PostActionSuccess {
+          post { id status }
+        }
+        ... on MutationError {
+          userFacingMessage
+        }
+      }
     }"""
 
     variables = {"input": {
@@ -254,8 +280,16 @@ def schedule_buffer_post(channel_id: str, text: str, media_id: str = None) -> bo
         if "errors" in data:
             print(f"❌ Erreur Buffer : {data['errors']}")
             return False
-        print(f"✅ Post envoyé ! ID: {data['data']['createPost']['post']['id']}")
-        return True
+        result = data.get("data", {}).get("createPost", {})
+        if "post" in result:
+            print(f"✅ Post envoyé ! ID: {result['post']['id']}")
+            return True
+        elif "userFacingMessage" in result:
+            print(f"❌ Erreur Buffer : {result['userFacingMessage']}")
+            return False
+        else:
+            print(f"⚠️  Réponse inattendue : {data}")
+            return False
     except Exception as e:
         print(f"❌ Erreur : {e}")
         return False
