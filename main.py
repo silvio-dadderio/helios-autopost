@@ -265,6 +265,8 @@ def schedule_buffer_post(channel_id: str, text: str, media_id: str = None) -> bo
     variables = {"input": {
         "channelId": channel_id,
         "text": text,
+        "schedulingType": "automatic",
+        "mode": "addToQueue"
     }}
     if media_id:
         variables["input"]["mediaIds"] = [media_id]
