@@ -2,11 +2,12 @@
 """
 HÉLIOS Cool Roof — Auto-Post autonome (Railway)
 - LinkedIn : texte, mardi + vendredi à 9h00 UTC
-- Instagram : image, lundi à 9h00 UTC
+- Instagram : image redimensionnée, lundi à 9h00 UTC
 - Alerte email quand plus d'images
 """
 
 import os
+import io
 import json
 import random
 import smtplib
@@ -16,6 +17,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from email.mime.text import MIMEText
+from PIL import Image
 
 BUFFER_TOKEN      = os.environ["BUFFER_TOKEN"]
 BUFFER_ORG_ID     = os.environ["BUFFER_ORG_ID"]
@@ -29,6 +31,8 @@ SMTP_SERVER       = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT         = int(os.environ.get("SMTP_PORT", "587"))
 IMAGES_API        = os.environ.get("IMAGES_API_URL", "")
 HISTORY_FILE      = "/data/used_images.json"
+
+INSTAGRAM_MAX_PX  = 4500  # limite sécurisée sous les 5000px d'Instagram
 
 def load_history():
     os.makedirs("/data", exist_ok=True)
@@ -127,6 +131,72 @@ def generate_instagram_caption(image_name):
     text = call_claude(f"Légende Instagram pour photo Cool Roof ({image_name}). 80-120 mots, 1-2 emojis, Réflectance 95% ou SRI 120, CTA lien en bio, 8-10 hashtags.", max_tokens=300)
     return text or FALLBACK_INSTAGRAM
 
+def download_and_resize_image(image_url: str) -> bytes | None:
+    """Télécharge l'image et la redimensionne si nécessaire pour Instagram."""
+    try:
+        r = requests.get(image_url, timeout=30)
+        if r.status_code != 200:
+            print(f"⚠️  Image non trouvée : {image_url}")
+            return None
+
+        img = Image.open(io.BytesIO(r.content))
+
+        # Convertir HEIC/autres formats en JPEG
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+
+        # Redimensionner si trop grande
+        w, h = img.size
+        if w > INSTAGRAM_MAX_PX or h > INSTAGRAM_MAX_PX:
+            ratio = min(INSTAGRAM_MAX_PX / w, INSTAGRAM_MAX_PX / h)
+            new_w, new_h = int(w * ratio), int(h * ratio)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            print(f"📐 Redimensionné : {w}x{h} → {new_w}x{new_h}")
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+
+    except Exception as e:
+        print(f"⚠️  Erreur resize : {e}")
+        return None
+
+def upload_image_to_buffer(image_url: str, image_name: str) -> str | None:
+    """Upload l'image sur Buffer et retourne l'URL publique Buffer."""
+    image_data = download_and_resize_image(image_url)
+    if not image_data:
+        return None
+
+    mutation = """mutation UploadMedia($input: UploadMediaInput!) {
+      uploadMedia(input: $input) { id url }
+    }"""
+
+    try:
+        files = {
+            "operations": (None, json.dumps({
+                "query": mutation,
+                "variables": {"input": {"organizationId": BUFFER_ORG_ID, "file": None}}
+            })),
+            "map": (None, json.dumps({"0": ["variables.input.file"]})),
+            "0": (f"{Path(image_name).stem}.jpg", image_data, "image/jpeg")
+        }
+        r = requests.post(
+            "https://api.buffer.com/graphql",
+            headers={"Authorization": f"Bearer {BUFFER_TOKEN}"},
+            files=files,
+            timeout=60
+        )
+        data = r.json()
+        if "errors" in data:
+            print(f"⚠️  Upload échoué : {data['errors']}")
+            return None
+        url = data["data"]["uploadMedia"]["url"]
+        print(f"✅ Image uploadée sur Buffer : {url}")
+        return url
+    except Exception as e:
+        print(f"⚠️  Erreur upload : {e}")
+        return None
+
 MUTATION = """mutation CreatePost($input: CreatePostInput!) {
   createPost(input: $input) {
     ... on PostActionSuccess { post { id status } }
@@ -159,14 +229,14 @@ def post_linkedin(text):
         print(f"❌ Erreur : {e}")
         return False
 
-def post_instagram(text, image_url):
+def post_instagram(text, buffer_image_url):
     variables = {"input": {
         "channelId": INSTAGRAM_CHANNEL,
         "text": text,
         "schedulingType": "automatic",
         "mode": "addToQueue",
         "metadata": {"instagram": {"type": "post", "shouldShareToFeed": True}},
-        "assets": {"images": [{"url": image_url}]}
+        "assets": [{"image": {"url": buffer_image_url}}]
     }}
     try:
         r = requests.post("https://api.buffer.com/graphql",
@@ -202,7 +272,14 @@ def job_instagram():
         return
     caption = generate_instagram_caption(image_name)
     image_url = f"{IMAGES_API}/{image_name}"
-    ok = post_instagram(caption, image_url)
+
+    # Upload image redimensionnée sur Buffer
+    buffer_url = upload_image_to_buffer(image_url, image_name)
+    if not buffer_url:
+        print("❌ Upload image échoué — post Instagram annulé")
+        return
+
+    ok = post_instagram(caption, buffer_url)
     if ok:
         h = load_history()
         h.setdefault("used_instagram", []).append(image_name)
