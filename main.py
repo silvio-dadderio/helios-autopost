@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 HÉLIOS Cool Roof — Auto-Post autonome (Railway)
-- LinkedIn : texte, mardi + vendredi à 9h00 UTC
-- Instagram : image redimensionnée, lundi à 9h00 UTC
+- LinkedIn : texte, jeudi à 9h00 UTC
+- Instagram : image redimensionnée, mardi à 16h00 UTC
 - Alerte email quand plus d'images
 """
 
