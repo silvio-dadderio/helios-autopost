@@ -292,12 +292,12 @@ def start_scheduler():
     print(f"  {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     print("=" * 55)
     print("  LinkedIn  : mardi + vendredi à 09:00 UTC")
-    print("  Instagram : lundi à 09:00 UTC")
+    print("  Instagram : mardi à 16:00 UTC (18h00 Paris)")
     print("=" * 55)
 
     schedule.every().tuesday.at("09:00").do(job_linkedin)
     schedule.every().friday.at("09:00").do(job_linkedin)
-    schedule.every().monday.at("09:00").do(job_instagram)
+    schedule.every().tuesday.at("16:00").do(job_instagram)
 
     print("\n✅ Scheduler actif — en attente des prochains créneaux...\n")
     while True:
