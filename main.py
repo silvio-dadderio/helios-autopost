@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 HÉLIOS Cool Roof — Auto-Post autonome (Railway)
-- LinkedIn : texte, jeudi à 9h00 UTC
+- LinkedIn : texte, mardi + vendredi à 9h00 UTC
 - Instagram : image redimensionnée, mardi à 16h00 UTC
 - Alerte email quand plus d'images
 """
@@ -31,8 +31,7 @@ SMTP_SERVER       = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT         = int(os.environ.get("SMTP_PORT", "587"))
 IMAGES_API        = os.environ.get("IMAGES_API_URL", "")
 HISTORY_FILE      = "/data/used_images.json"
-
-INSTAGRAM_MAX_PX  = 4500  # limite sécurisée sous les 5000px d'Instagram
+INSTAGRAM_MAX_PX  = 4500
 
 def load_history():
     os.makedirs("/data", exist_ok=True)
@@ -113,10 +112,11 @@ def call_claude(prompt, system="", max_tokens=600):
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-sonnet-4-20250514", "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": prompt}]},
+            json={"model": "claude-sonnet-4-6", "max_tokens": max_tokens, "system": system, "messages": [{"role": "user", "content": prompt}]},
             timeout=30
         )
-        return r.json()["content"][0]["text"].strip()
+        data = r.json()
+        return data["content"][0]["text"].strip()
     except Exception as e:
         print(f"⚠️  Erreur Claude : {e}")
         return None
@@ -125,27 +125,35 @@ def generate_linkedin_text():
     fmt = random.choice(list(FORMAT_PROMPTS.keys()))
     print(f"✍️  Format : {fmt}")
     text = call_claude(FORMAT_PROMPTS[fmt], system="Tu es le community manager de HÉLIOS Cool Roof BtoB. Style direct, expert, chiffres concrets.")
-    return text or FALLBACK_LINKEDIN
+    if not text:
+        print("⚠️  Claude indisponible — post LinkedIn annulé")
+        return None
+    return text
 
 def generate_instagram_caption(image_name):
     text = call_claude(f"Légende Instagram pour photo Cool Roof ({image_name}). 80-120 mots, 1-2 emojis, Réflectance 95% ou SRI 120, CTA lien en bio, 8-10 hashtags.", max_tokens=300)
     return text or FALLBACK_INSTAGRAM
 
 def download_and_resize_image(image_url: str) -> bytes | None:
-    """Télécharge l'image et la redimensionne si nécessaire pour Instagram."""
     try:
-        r = requests.get(image_url, timeout=30)
+        r = requests.get(
+            image_url,
+            timeout=30,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "image/*"}
+        )
         if r.status_code != 200:
-            print(f"⚠️  Image non trouvée : {image_url}")
+            print(f"⚠️  Image non trouvée ({r.status_code}) : {image_url}")
             return None
+
+        print(f"📥 Image téléchargée : {len(r.content)} bytes, content-type: {r.headers.get('content-type')}")
 
         img = Image.open(io.BytesIO(r.content))
 
-        # Convertir HEIC/autres formats en JPEG
-        if img.mode in ("RGBA", "P"):
+        if img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+        elif img.mode != "RGB":
             img = img.convert("RGB")
 
-        # Redimensionner si trop grande
         w, h = img.size
         if w > INSTAGRAM_MAX_PX or h > INSTAGRAM_MAX_PX:
             ratio = min(INSTAGRAM_MAX_PX / w, INSTAGRAM_MAX_PX / h)
@@ -162,7 +170,6 @@ def download_and_resize_image(image_url: str) -> bytes | None:
         return None
 
 def upload_image_to_buffer(image_url: str, image_name: str) -> str | None:
-    """Upload l'image sur Buffer et retourne l'URL publique Buffer."""
     image_data = download_and_resize_image(image_url)
     if not image_data:
         return None
@@ -259,6 +266,9 @@ def post_instagram(text, buffer_image_url):
 def job_linkedin():
     print(f"\n[{datetime.now().strftime('%d/%m/%Y %H:%M')}] 📤 Job LinkedIn")
     text = generate_linkedin_text()
+    if not text:
+        print("⛔ Post LinkedIn annulé — Claude indisponible")
+        return
     ok = post_linkedin(text)
     if ok:
         h = load_history()
@@ -272,13 +282,10 @@ def job_instagram():
         return
     caption = generate_instagram_caption(image_name)
     image_url = f"{IMAGES_API}/{image_name}"
-
-    # Upload image redimensionnée sur Buffer
     buffer_url = upload_image_to_buffer(image_url, image_name)
     if not buffer_url:
         print("❌ Upload image échoué — post Instagram annulé")
         return
-
     ok = post_instagram(caption, buffer_url)
     if ok:
         h = load_history()
